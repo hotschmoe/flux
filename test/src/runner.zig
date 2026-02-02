@@ -5,20 +5,16 @@
 //! - Running all tests or specific suites
 //! - Filtering tests by name pattern
 //! - JSON output for CI integration
-//! - Golden image update mode
 
 const std = @import("std");
 const framework = @import("framework.zig");
-const golden = @import("golden.zig");
 
-// Import test suites
 const layout_tests = @import("layout/tests.zig");
 const render_tests = @import("render/tests.zig");
 const input_tests = @import("input/tests.zig");
 const widgets_tests = @import("widgets/tests.zig");
 const text_tests = @import("text/tests.zig");
 
-/// All registered test suites
 const all_suites = [_]framework.TestSuite{
     layout_tests.suite,
     render_tests.suite,
@@ -27,25 +23,17 @@ const all_suites = [_]framework.TestSuite{
     text_tests.suite,
 };
 
-/// Command-line options
 const Options = struct {
-    /// Filter tests by name pattern
     filter: ?[]const u8 = null,
-    /// Run only specific suite
     suite: ?[]const u8 = null,
-    /// Output format
     format: Format = .text,
-    /// Update golden images instead of comparing
     update_golden: bool = false,
-    /// Show verbose output
     verbose: bool = false,
-    /// Stop on first failure
     fail_fast: bool = false,
 
     const Format = enum { text, json };
 };
 
-/// Overall test run statistics
 const RunStats = struct {
     total: usize = 0,
     passed: usize = 0,
@@ -57,10 +45,9 @@ const RunStats = struct {
         self.total += 1;
         self.duration_ns += result.duration_ns;
         switch (result.status) {
-            .passed => self.passed += 1,
+            .passed, .expected_fail => self.passed += 1,
             .failed => self.failed += 1,
             .skipped => self.skipped += 1,
-            .expected_fail => self.passed += 1, // Count expected failures as passes
         }
     }
 };
@@ -68,30 +55,21 @@ const RunStats = struct {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
-    const options = parseArgs(allocator) catch |err| {
-        std.log.err("Failed to parse arguments: {}", .{err});
-        return err;
-    };
+    const options = parseArgs();
+    const stats = runAllTests(options);
 
-    const stats = runAllTests(allocator, options);
-
-    // Print summary
     printSummary(stats, options);
 
-    // Exit with error code if any tests failed
     if (stats.failed > 0) {
         std.process.exit(1);
     }
 }
 
-fn parseArgs(allocator: std.mem.Allocator) !Options {
-    _ = allocator;
+fn parseArgs() Options {
     var options = Options{};
-
     var args = std.process.args();
-    _ = args.skip(); // Skip program name
+    _ = args.skip();
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--filter")) {
@@ -141,31 +119,26 @@ fn printUsage() void {
     std.debug.print("{s}\n", .{usage});
 }
 
-fn runAllTests(allocator: std.mem.Allocator, options: Options) RunStats {
+fn runAllTests(options: Options) RunStats {
     var stats = RunStats{};
     const start_time = std.time.nanoTimestamp();
 
     for (all_suites) |suite| {
-        // Filter by suite name if specified
         if (options.suite) |suite_filter| {
-            if (!std.mem.eql(u8, suite.name, suite_filter)) {
-                continue;
-            }
+            if (!std.mem.eql(u8, suite.name, suite_filter)) continue;
         }
 
         if (options.format == .text and options.verbose) {
             std.debug.print("\n=== {s} ===\n", .{suite.name});
         }
 
-        const suite_stats = runSuite(allocator, suite, options);
+        const suite_stats = runSuite(suite, options);
         stats.total += suite_stats.total;
         stats.passed += suite_stats.passed;
         stats.failed += suite_stats.failed;
         stats.skipped += suite_stats.skipped;
 
-        if (options.fail_fast and suite_stats.failed > 0) {
-            break;
-        }
+        if (options.fail_fast and suite_stats.failed > 0) break;
     }
 
     const end_time = std.time.nanoTimestamp();
@@ -174,46 +147,34 @@ fn runAllTests(allocator: std.mem.Allocator, options: Options) RunStats {
     return stats;
 }
 
-fn runSuite(allocator: std.mem.Allocator, suite: framework.TestSuite, options: Options) RunStats {
+fn runSuite(suite: framework.TestSuite, options: Options) RunStats {
     var stats = RunStats{};
 
     for (suite.tests) |test_case| {
-        // Filter by test name if specified
         if (options.filter) |filter| {
-            if (std.mem.indexOf(u8, test_case.name, filter) == null) {
-                continue;
-            }
+            if (std.mem.indexOf(u8, test_case.name, filter) == null) continue;
         }
 
-        const result = runTest(allocator, suite, test_case, options);
+        const result = runTest(suite, test_case);
         stats.addResult(result);
 
         if (options.format == .text) {
             printTestResult(result, options.verbose);
         }
 
-        if (options.fail_fast and result.status == .failed) {
-            break;
-        }
+        if (options.fail_fast and result.status == .failed) break;
     }
 
     return stats;
 }
 
-fn runTest(allocator: std.mem.Allocator, suite: framework.TestSuite, test_case: framework.TestCase, options: Options) framework.TestResult {
-    _ = allocator;
-    _ = options;
-
+fn runTest(suite: framework.TestSuite, test_case: framework.TestCase) framework.TestResult {
     if (test_case.skip) {
-        return .{
-            .name = test_case.name,
-            .status = .skipped,
-        };
+        return .{ .name = test_case.name, .status = .skipped };
     }
 
     const start_time = std.time.nanoTimestamp();
 
-    // Run setup if available
     if (suite.setup) |setup| {
         setup() catch |err| {
             return .{
@@ -224,10 +185,8 @@ fn runTest(allocator: std.mem.Allocator, suite: framework.TestSuite, test_case: 
         };
     }
 
-    // Run the test
-    const result = test_case.run();
+    const test_result = test_case.run();
 
-    // Run teardown if available
     if (suite.teardown) |teardown| {
         teardown();
     }
@@ -235,23 +194,17 @@ fn runTest(allocator: std.mem.Allocator, suite: framework.TestSuite, test_case: 
     const end_time = std.time.nanoTimestamp();
     const duration: u64 = @intCast(@as(i128, end_time) - @as(i128, start_time));
 
-    if (result) |_| {
+    if (test_result) |_| {
         return .{
             .name = test_case.name,
             .status = .passed,
             .duration_ns = duration,
         };
     } else |err| {
-        if (test_case.expected_fail) {
-            return .{
-                .name = test_case.name,
-                .status = .expected_fail,
-                .duration_ns = duration,
-            };
-        }
+        const status: framework.TestResult.Status = if (test_case.expected_fail) .expected_fail else .failed;
         return .{
             .name = test_case.name,
-            .status = .failed,
+            .status = status,
             .duration_ns = duration,
             .error_message = @errorName(err),
         };
