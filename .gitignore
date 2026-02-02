@@ -1,0 +1,25 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Compiled shaders
+*.spv
+
+# Font atlas cache
+.font-cache/
+
+# Local development
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Debug
+*.pdb
